@@ -40,5 +40,5 @@ $(UTILS_DIR)/socket.o: $(UTILS_DIR)/socket.c
 	$(CC) $(CFLAGS) -c $(UTILS_DIR)/socket.c -o $(UTILS_DIR)/socket.o
 
 clean:
-	rm -f http_server *.o $(PLUGIN_DIR)/*.o $(UTILS_DIR)/*.o
+	rm -f http_server *.o $(PLUGIN_DIR)/*.o $(UTILS_DIR)/*.o my_log.*
 
