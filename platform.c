@@ -13,6 +13,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <string.h>
+#include <strings.h>
 #include <errno.h>
 #include <arpa/inet.h>
 
@@ -69,9 +70,28 @@ void handle_event(int loop_fd, void *event, int server_fd, char *buffer, size_t 
             close(fd);
         } else {
             buffer[valread] = '\0';
-            char method[16], path[256], version[16];
-            sscanf(buffer, "%s %s %s", method, path, version);
-            handle_request(fd, method, path, NULL);
+            // Optimized manual HTTP parsing (much faster than sscanf)
+            char *line_end = (char *)memchr(buffer, '\n', valread);
+            if (line_end) {
+                *line_end = '\0';
+            }
+            
+            // Parse method (GET, POST, etc.)
+            char *method_start = buffer;
+            char *method_end = method_start;
+            while (*method_end && *method_end != ' ' && *method_end != '\t') method_end++;
+            if (*method_end) *method_end++ = '\0';
+            
+            // Skip whitespace
+            while (*method_end == ' ' || *method_end == '\t') method_end++;
+            
+            // Parse path
+            char *path_start = method_end;
+            char *path_end = path_start;
+            while (*path_end && *path_end != ' ' && *path_end != '\t' && *path_end != '?') path_end++;
+            if (*path_end) *path_end = '\0';
+            
+            handle_request(fd, method_start, path_start, NULL);
         }
     }
 }
@@ -128,9 +148,28 @@ void handle_event(int loop_fd, void *event, int server_fd, char *buffer, size_t 
             close(fd);
         } else {
             buffer[valread] = '\0';
-            char method[16], path[256], version[16];
-            sscanf(buffer, "%s %s %s", method, path, version);
-            handle_request(fd, method, path, NULL);
+            // Optimized manual HTTP parsing (much faster than sscanf)
+            char *line_end = (char *)memchr(buffer, '\n', valread);
+            if (line_end) {
+                *line_end = '\0';
+            }
+            
+            // Parse method (GET, POST, etc.)
+            char *method_start = buffer;
+            char *method_end = method_start;
+            while (*method_end && *method_end != ' ' && *method_end != '\t') method_end++;
+            if (*method_end) *method_end++ = '\0';
+            
+            // Skip whitespace
+            while (*method_end == ' ' || *method_end == '\t') method_end++;
+            
+            // Parse path
+            char *path_start = method_end;
+            char *path_end = path_start;
+            while (*path_end && *path_end != ' ' && *path_end != '\t' && *path_end != '?') path_end++;
+            if (*path_end) *path_end = '\0';
+            
+            handle_request(fd, method_start, path_start, NULL);
         }
     }
 }

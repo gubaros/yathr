@@ -49,25 +49,45 @@ static size_t redirects_count = 0;
 static size_t redirects_capacity = 0;
 static int routing_initialized = 0;
 
-// Find insertion position for maintaining sorted order (binary search)
-static int find_insert_position(const char *key) {
+// Find insertion position for maintaining sorted order (optimized binary search)
+// Returns insertion position. If *exists is not NULL, sets it to 1 if key exists, 0 otherwise
+static int find_insert_position(const char *key, int *exists) {
     int left = 0;
     int right = (int)redirects_count - 1;
+    int cmp = 0;
     
-    while (left <= right) {
-        int mid = left + (right - left) / 2;
-        int cmp = strcmp(redirects[mid].key, key);
+    // Optimized binary search with reduced comparisons
+    while (left < right) {
+        int mid = left + ((right - left) >> 1); // Use bit shift instead of division
+        cmp = strcmp(redirects[mid].key, key);
         
-        if (cmp == 0) {
-            return mid; // Key already exists
-        } else if (cmp < 0) {
+        if (cmp < 0) {
             left = mid + 1;
+        } else if (cmp > 0) {
+            right = mid;
         } else {
-            right = mid - 1;
+            // Found exact match
+            if (exists) *exists = 1;
+            return mid;
         }
     }
     
-    return left; // Position where key should be inserted
+    // Final check for equality when left == right
+    if (left < (int)redirects_count) {
+        cmp = strcmp(redirects[left].key, key);
+        if (cmp == 0) {
+            if (exists) *exists = 1;
+            return left;
+        } else if (cmp > 0) {
+            // Key is less than redirects[left], insert at left
+            if (exists) *exists = 0;
+            return left;
+        }
+        // else: cmp < 0, key is greater, insert after left
+    }
+    
+    if (exists) *exists = 0;
+    return left; // Insert at end (key is greater than all existing keys)
 }
 
 // Ensure capacity for at least one more entry
@@ -125,9 +145,10 @@ int add_redirect(const char *key, const char *url) {
         init_routing();
     }
     
-    // Check if key already exists
-    int pos = find_insert_position(key);
-    if (pos < (int)redirects_count && strcmp(redirects[pos].key, key) == 0) {
+    // Find insertion position and check if key exists (optimized: single search)
+    int exists = 0;
+    int pos = find_insert_position(key, &exists);
+    if (exists) {
         // Key exists, update URL
         free(redirects[pos].url);
         redirects[pos].url = strdup(url);
@@ -179,11 +200,12 @@ const char *find_redirect(const char *key) {
         return NULL;
     }
     
+    // Optimized binary search using bit shift (same as find_insert_position)
     int left = 0;
     int right = (int)redirects_count - 1;
     
     while (left <= right) {
-        int mid = left + (right - left) / 2;
+        int mid = left + ((right - left) >> 1); // Use bit shift instead of division
         int cmp = strcmp(redirects[mid].key, key);
         
         if (cmp == 0) {
