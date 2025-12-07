@@ -44,6 +44,7 @@ my_log.txt
 *.su
 *.idb
 *.pdb
+my_log.*
 
 # Kernel Module Compile Results
 *.mod*

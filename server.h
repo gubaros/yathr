@@ -12,8 +12,5 @@ typedef struct {
     void *plugin;  // Agregar este campo
 } RequestData;
 
-void handle_request(int client_socket, const char *method, const char *path, const char *auth_header);
-int set_nonblocking(int fd);
-
 #endif // SERVER_H
 

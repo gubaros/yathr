@@ -6,6 +6,8 @@
 
 #include "platform.h"
 #include "server.h"
+#include "http.h"
+#include "utils/socket.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
