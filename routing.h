@@ -8,5 +8,8 @@
 #define ROUTING_H
 
 const char *find_redirect(const char *key);
+int add_redirect(const char *key, const char *url);
+void init_routing(void);
+void cleanup_routing(void);
 
 #endif // ROUTING_H

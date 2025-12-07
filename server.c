@@ -16,6 +16,7 @@
 #endif
 #include "server.h"
 #include "platform.h"
+#include "routing.h"
 #include "utils/logs.h"
 #include "utils/config.h"
 #include "utils/socket.h"
@@ -32,6 +33,7 @@ int main() {
     char buffer[BUFFER_SIZE];
 
     init_logs();
+    init_routing();
 
     int port = read_port_from_config("config.txt");
     if (port == -1) {
