@@ -1,27 +1,54 @@
 # AGENTS.md
 
-This file defines default instructions for coding agents working in this repository.
+This file defines practical instructions for coding agents working in this repository.
 
-## Environment defaults
+## Repository facts
 
-- Assume macOS and zsh for command examples and shell usage.
-- Prefer zsh-compatible syntax in scripts and command snippets.
+- This is a C codebase for an HTTP redirect server.
+- Main modules in the repository root:
+  - `server.c` (entry point/event loop setup)
+  - `platform.c/.h` (event loop abstraction: epoll on Linux, kqueue on non-Linux)
+  - `http.c/.h` (request handling and HTTP responses)
+  - `routing.c/.h` (in-memory redirect table and lookup)
+- Utility modules:
+  - `utils/socket.c/.h`
+  - `utils/config.c/.h`
+  - `utils/logs.c/.h`
+- Plugin modules:
+  - `plugins/plugin.c/.h`
+  - `plugins/pre_routing_plugin.c`
+  - `plugins/post_routing_plugin.c`
 
-## Required application stack
+## Build and run commands
 
-- Frontend: React
-- Backend: Node.js with Express
-- Database: PostgreSQL
+- Build the server with:
+  - `make`
+  - or `make http_server`
+- Clean build outputs with:
+  - `make clean`
+- Run the server binary:
+  - `./http_server`
 
-Unless explicitly requested otherwise, do not switch to alternative frameworks or databases.
+## Runtime/configuration facts
 
-## Dependency policy
+- Server port is read from `config.txt` via `SERVER_PORT=...`.
+- Logging is configured with `zlog.conf`.
+- `utils/logs.c` uses zlog (`<zlog.h>`), and the Makefile links with `-lzlog`.
 
-- Use the latest stable package versions when adding dependencies.
-- Install dependencies through the appropriate package manager (for example, npm).
+## GitHub Actions present in this repo
 
-## Implementation expectations
+- `.github/workflows/ci.yml`
+  - Triggers on push/pull_request to `main`.
+  - Installs build dependencies, tinycdb and zlog, then runs compile/run checks.
+- `.github/workflows/cia.yml`
+  - Triggers on pull requests.
+  - Sets up Python and runs `python review_code.py`.
 
-- Keep changes focused on the requested task.
-- Prefer clear, maintainable code over clever shortcuts.
-- Add or update tests when behavior changes.
+## Agent guidelines for changes
+
+- Treat this as a C project first; do not introduce unrelated stack assumptions.
+- Keep edits minimal and scoped to the requested task.
+- When changing build/runtime behavior, verify commands and file references against:
+  - `Makefile`
+  - `.github/workflows/*.yml`
+  - existing source files in root, `utils/`, and `plugins/`.
