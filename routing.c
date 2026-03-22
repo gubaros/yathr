@@ -83,11 +83,13 @@ static int find_insert_position(const char *key, int *exists) {
             if (exists) *exists = 0;
             return left;
         }
-        // else: cmp < 0, key is greater, insert after left
+        // else: cmp < 0, key is greater than redirects[left], insert after it
+        if (exists) *exists = 0;
+        return left + 1;
     }
     
     if (exists) *exists = 0;
-    return left; // Insert at end (key is greater than all existing keys)
+    return left; // Array is empty; left == redirects_count == 0
 }
 
 // Ensure capacity for at least one more entry

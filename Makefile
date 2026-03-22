@@ -41,4 +41,24 @@ $(UTILS_DIR)/socket.o: $(UTILS_DIR)/socket.c
 
 clean:
 	rm -f http_server *.o $(PLUGIN_DIR)/*.o $(UTILS_DIR)/*.o my_log.*
+	rm -f tests/test_routing tests/test_config
+
+TESTS_DIR = tests
+UNITY_SRC = $(TESTS_DIR)/unity/unity.c
+
+# Unit tests
+$(TESTS_DIR)/test_routing: $(TESTS_DIR)/test_routing.c $(UNITY_SRC) routing.c
+	$(CC) $(CFLAGS) -I$(TESTS_DIR) -I. -o $@ $^
+
+$(TESTS_DIR)/test_config: $(TESTS_DIR)/test_config.c $(UNITY_SRC) $(TESTS_DIR)/logs_stub.c $(UTILS_DIR)/config.c
+	$(CC) $(CFLAGS) -I$(TESTS_DIR) -I. -o $@ $^
+
+.PHONY: test
+test: http_server $(TESTS_DIR)/test_routing $(TESTS_DIR)/test_config
+	@echo "=== Unit Tests ==="
+	./$(TESTS_DIR)/test_routing
+	./$(TESTS_DIR)/test_config
+	@echo ""
+	@echo "=== Integration Tests ==="
+	bash $(TESTS_DIR)/integration.sh
 
