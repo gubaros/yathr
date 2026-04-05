@@ -8,233 +8,198 @@
 #include <string.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <stdint.h>
+
+/*
+ * Routing uses an open-addressing hash table (FNV-1a, linear probing).
+ * Each entry pre-builds the full HTTP 302 response so handle_request
+ * can call send() directly without any strlen/memcpy on the hot path.
+ *
+ * HASH_TABLE_SIZE must be a power of 2 and > 2× the maximum number of
+ * entries to keep load factor below 0.5.  256 comfortably covers the
+ * 20 built-in redirects plus reasonable runtime additions.
+ */
+#define HASH_TABLE_SIZE 256
+
+static const char RESPONSE_HEADER[] = "HTTP/1.1 302 Found\r\nLocation: ";
+static const char RESPONSE_FOOTER[] = "\r\nContent-Length: 0\r\n\r\n";
+#define RESPONSE_HEADER_LEN (sizeof(RESPONSE_HEADER) - 1)
+#define RESPONSE_FOOTER_LEN (sizeof(RESPONSE_FOOTER) - 1)
 
 typedef struct {
-    char *key;
-    char *url;
+    char   *key;
+    char   *url;
+    char   *response;       /* pre-built HTTP 302 response */
+    size_t  response_len;
 } Redirect;
 
-// Default entries for initialization (sorted alphabetically)
-static const struct {
-    const char *key;
-    const char *url;
-} default_redirects[] = {
-    {"amazon", "https://www.amazon.com"},
-    {"apple", "https://www.apple.com"},
-    {"bbc", "https://www.bbc.com"},
-    {"bing", "https://www.bing.com"},
-    {"cnn", "https://www.cnn.com"},
-    {"ebay", "https://www.ebay.com"},
-    {"facebook", "https://www.facebook.com"},
-    {"google", "https://www.google.com"},
-    {"guardian", "https://www.theguardian.com"},
+static Redirect hash_table[HASH_TABLE_SIZE]; /* zero-initialised by C */
+static size_t redirects_count    = 0;
+static int    routing_initialized = 0;
+
+/* Default entries (order does not matter for a hash table) */
+static const struct { const char *key; const char *url; } default_redirects[] = {
+    {"amazon",    "https://www.amazon.com"},
+    {"apple",     "https://www.apple.com"},
+    {"bbc",       "https://www.bbc.com"},
+    {"bing",      "https://www.bing.com"},
+    {"cnn",       "https://www.cnn.com"},
+    {"ebay",      "https://www.ebay.com"},
+    {"facebook",  "https://www.facebook.com"},
+    {"google",    "https://www.google.com"},
+    {"guardian",  "https://www.theguardian.com"},
     {"instagram", "https://www.instagram.com"},
-    {"linkedin", "https://www.linkedin.com"},
+    {"linkedin",  "https://www.linkedin.com"},
     {"microsoft", "https://www.microsoft.com"},
-    {"netflix", "https://www.netflix.com"},
-    {"nytimes", "https://www.nytimes.com"},
+    {"netflix",   "https://www.netflix.com"},
+    {"nytimes",   "https://www.nytimes.com"},
     {"pinterest", "https://www.pinterest.com"},
-    {"reddit", "https://www.reddit.com"},
-    {"twitter", "https://www.twitter.com"},
+    {"reddit",    "https://www.reddit.com"},
+    {"twitter",   "https://www.twitter.com"},
     {"wikipedia", "https://www.wikipedia.org"},
-    {"yahoo", "https://www.yahoo.com"},
-    {"youtube", "https://www.youtube.com"},
+    {"yahoo",     "https://www.yahoo.com"},
+    {"youtube",   "https://www.youtube.com"},
 };
-
 #define DEFAULT_REDIRECTS_COUNT (sizeof(default_redirects) / sizeof(default_redirects[0]))
-#define INITIAL_CAPACITY 32
 
-static Redirect *redirects = NULL;
-static size_t redirects_count = 0;
-static size_t redirects_capacity = 0;
-static int routing_initialized = 0;
-
-// Find insertion position for maintaining sorted order (optimized binary search)
-// Returns insertion position. If *exists is not NULL, sets it to 1 if key exists, 0 otherwise
-static int find_insert_position(const char *key, int *exists) {
-    int left = 0;
-    int right = (int)redirects_count - 1;
-    int cmp = 0;
-    
-    // Optimized binary search with reduced comparisons
-    while (left < right) {
-        int mid = left + ((right - left) >> 1); // Use bit shift instead of division
-        cmp = strcmp(redirects[mid].key, key);
-        
-        if (cmp < 0) {
-            left = mid + 1;
-        } else if (cmp > 0) {
-            right = mid;
-        } else {
-            // Found exact match
-            if (exists) *exists = 1;
-            return mid;
-        }
+/* FNV-1a: fast, good distribution for short strings */
+static uint32_t fnv1a(const char *key) {
+    uint32_t hash = 2166136261u;
+    while (*key) {
+        hash ^= (uint8_t)*key++;
+        hash *= 16777619u;
     }
-    
-    // Final check for equality when left == right
-    if (left < (int)redirects_count) {
-        cmp = strcmp(redirects[left].key, key);
-        if (cmp == 0) {
-            if (exists) *exists = 1;
-            return left;
-        } else if (cmp > 0) {
-            // Key is less than redirects[left], insert at left
-            if (exists) *exists = 0;
-            return left;
-        }
-        // else: cmp < 0, key is greater than redirects[left], insert after it
-        if (exists) *exists = 0;
-        return left + 1;
-    }
-    
-    if (exists) *exists = 0;
-    return left; // Array is empty; left == redirects_count == 0
+    return hash;
 }
 
-// Ensure capacity for at least one more entry
-static int ensure_capacity(void) {
-    if (redirects_count >= redirects_capacity) {
-        size_t new_capacity = redirects_capacity == 0 ? INITIAL_CAPACITY : redirects_capacity * 2;
-        Redirect *new_redirects = realloc(redirects, new_capacity * sizeof(Redirect));
-        if (new_redirects == NULL) {
-            return 0; // Allocation failed
-        }
-        redirects = new_redirects;
-        redirects_capacity = new_capacity;
+/* Build the pre-computed HTTP 302 response for a given URL. */
+static char *build_response(const char *url, size_t url_len, size_t *out_len) {
+    size_t total = RESPONSE_HEADER_LEN + url_len + RESPONSE_FOOTER_LEN;
+    char *resp = malloc(total);
+    if (!resp) return NULL;
+    char *p = resp;
+    memcpy(p, RESPONSE_HEADER, RESPONSE_HEADER_LEN); p += RESPONSE_HEADER_LEN;
+    memcpy(p, url, url_len);                         p += url_len;
+    memcpy(p, RESPONSE_FOOTER, RESPONSE_FOOTER_LEN);
+    *out_len = total;
+    return resp;
+}
+
+/*
+ * Find the slot for `key` using linear probing.
+ * Returns the index of the matching slot or the first empty slot.
+ * Returns -1 if the table is full (should never happen at <50% load).
+ */
+static int find_slot(const char *key) {
+    uint32_t h = fnv1a(key) & (HASH_TABLE_SIZE - 1);
+    for (int i = 0; i < HASH_TABLE_SIZE; i++) {
+        uint32_t slot = (h + (uint32_t)i) & (HASH_TABLE_SIZE - 1);
+        if (hash_table[slot].key == NULL) return (int)slot;
+        if (strcmp(hash_table[slot].key, key) == 0) return (int)slot;
     }
-    return 1; // Success
+    return -1;
+}
+
+/* Internal insert used by init_routing (bypasses the init check). */
+static int insert_redirect(const char *key, const char *url) {
+    int slot = find_slot(key);
+    if (slot < 0) return 0;
+
+    size_t url_len = strlen(url);
+
+    if (hash_table[slot].key != NULL) {
+        /* Update existing entry */
+        free(hash_table[slot].url);
+        free(hash_table[slot].response);
+        hash_table[slot].url = strdup(url);
+        if (!hash_table[slot].url) return 0;
+        hash_table[slot].response = build_response(url, url_len,
+                                        &hash_table[slot].response_len);
+        return hash_table[slot].response != NULL;
+    }
+
+    /* New entry */
+    hash_table[slot].key = strdup(key);
+    if (!hash_table[slot].key) return 0;
+    hash_table[slot].url = strdup(url);
+    if (!hash_table[slot].url) { free(hash_table[slot].key); hash_table[slot].key = NULL; return 0; }
+    hash_table[slot].response = build_response(url, url_len, &hash_table[slot].response_len);
+    if (!hash_table[slot].response) {
+        free(hash_table[slot].key); hash_table[slot].key = NULL;
+        free(hash_table[slot].url); hash_table[slot].url = NULL;
+        return 0;
+    }
+    redirects_count++;
+    return 1;
 }
 
 void init_routing(void) {
-    if (routing_initialized) {
-        return;
-    }
-    
-    redirects_capacity = INITIAL_CAPACITY;
-    redirects = malloc(redirects_capacity * sizeof(Redirect));
-    if (redirects == NULL) {
-        return;
-    }
-    
-    // Add all default entries (already sorted)
-    for (size_t i = 0; i < DEFAULT_REDIRECTS_COUNT; i++) {
-        redirects[i].key = strdup(default_redirects[i].key);
-        redirects[i].url = strdup(default_redirects[i].url);
-        if (redirects[i].key == NULL || redirects[i].url == NULL) {
-            // Free allocated memory on failure
-            for (size_t j = 0; j < i; j++) {
-                free(redirects[j].key);
-                free(redirects[j].url);
-            }
-            free(redirects);
-            redirects = NULL;
-            redirects_capacity = 0;
-            return;
-        }
-    }
-    
-    redirects_count = DEFAULT_REDIRECTS_COUNT;
+    if (routing_initialized) return;
     routing_initialized = 1;
+    for (size_t i = 0; i < DEFAULT_REDIRECTS_COUNT; i++) {
+        insert_redirect(default_redirects[i].key, default_redirects[i].url);
+    }
 }
 
 int add_redirect(const char *key, const char *url) {
-    if (key == NULL || url == NULL) {
-        return 0; // Invalid parameters
-    }
-    
-    if (!routing_initialized) {
-        init_routing();
-    }
-    
-    // Find insertion position and check if key exists (optimized: single search)
-    int exists = 0;
-    int pos = find_insert_position(key, &exists);
-    if (exists) {
-        // Key exists, update URL
-        free(redirects[pos].url);
-        redirects[pos].url = strdup(url);
-        return redirects[pos].url != NULL ? 1 : 0;
-    }
-    
-    // Ensure we have capacity
-    if (!ensure_capacity()) {
-        return 0; // Allocation failed
-    }
-    
-    // Shift elements to make room for new entry
-    for (int i = (int)redirects_count; i > pos; i--) {
-        redirects[i] = redirects[i - 1];
-    }
-    
-    // Insert new entry at the correct sorted position
-    redirects[pos].key = strdup(key);
-    redirects[pos].url = strdup(url);
-    
-    if (redirects[pos].key == NULL || redirects[pos].url == NULL) {
-        // Free on failure and restore array
-        if (redirects[pos].key != NULL) free(redirects[pos].key);
-        if (redirects[pos].url != NULL) free(redirects[pos].url);
-        for (int i = pos; i < (int)redirects_count; i++) {
-            redirects[i] = redirects[i + 1];
-        }
-        return 0;
-    }
-    
-    redirects_count++;
-    return 1; // Success
+    if (!key || !url) return 0;
+    if (!routing_initialized) init_routing();
+    return insert_redirect(key, url);
 }
 
 const char *find_redirect(const char *key) {
-    if (key == NULL) {
-        return NULL;
-    }
-    
-    // Lazy initialization if not already initialized
+    if (!key) return NULL;
     if (!routing_initialized) {
         init_routing();
-        if (!routing_initialized) {
-            return NULL; // Initialization failed
+        if (!routing_initialized) return NULL;
+    }
+
+    uint32_t h = fnv1a(key) & (HASH_TABLE_SIZE - 1);
+    for (int i = 0; i < HASH_TABLE_SIZE; i++) {
+        uint32_t slot = (h + (uint32_t)i) & (HASH_TABLE_SIZE - 1);
+        if (hash_table[slot].key == NULL) return NULL;
+        if (strcmp(hash_table[slot].key, key) == 0) return hash_table[slot].url;
+    }
+    return NULL;
+}
+
+/*
+ * Fast path: returns the pre-built HTTP 302 response and its length.
+ * Eliminates strlen + memcpy from handle_request on every hit.
+ * Returns NULL if the key is not found.
+ */
+const char *find_redirect_response(const char *key, size_t *response_len) {
+    if (!key) return NULL;
+    if (!routing_initialized) {
+        init_routing();
+        if (!routing_initialized) return NULL;
+    }
+
+    uint32_t h = fnv1a(key) & (HASH_TABLE_SIZE - 1);
+    for (int i = 0; i < HASH_TABLE_SIZE; i++) {
+        uint32_t slot = (h + (uint32_t)i) & (HASH_TABLE_SIZE - 1);
+        if (hash_table[slot].key == NULL) return NULL;
+        if (strcmp(hash_table[slot].key, key) == 0) {
+            if (response_len) *response_len = hash_table[slot].response_len;
+            return hash_table[slot].response;
         }
     }
-    
-    if (redirects_count == 0) {
-        return NULL;
-    }
-    
-    // Optimized binary search using bit shift (same as find_insert_position)
-    int left = 0;
-    int right = (int)redirects_count - 1;
-    
-    while (left <= right) {
-        int mid = left + ((right - left) >> 1); // Use bit shift instead of division
-        int cmp = strcmp(redirects[mid].key, key);
-        
-        if (cmp == 0) {
-            return redirects[mid].url;
-        } else if (cmp < 0) {
-            left = mid + 1;
-        } else {
-            right = mid - 1;
-        }
-    }
-    
     return NULL;
 }
 
 void cleanup_routing(void) {
-    if (!routing_initialized) {
-        return;
+    if (!routing_initialized) return;
+    for (int i = 0; i < HASH_TABLE_SIZE; i++) {
+        if (hash_table[i].key) {
+            free(hash_table[i].key);
+            free(hash_table[i].url);
+            free(hash_table[i].response);
+            hash_table[i].key      = NULL;
+            hash_table[i].url      = NULL;
+            hash_table[i].response = NULL;
+            hash_table[i].response_len = 0;
+        }
     }
-    
-    for (size_t i = 0; i < redirects_count; i++) {
-        free(redirects[i].key);
-        free(redirects[i].url);
-    }
-    
-    free(redirects);
-    redirects = NULL;
-    redirects_count = 0;
-    redirects_capacity = 0;
+    redirects_count     = 0;
     routing_initialized = 0;
 }
