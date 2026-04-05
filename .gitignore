@@ -1,6 +1,8 @@
 # Prerequisites
 *.d
 http_server
+tests/test_routing
+tests/test_config
 create 
 my_log.txt
 
